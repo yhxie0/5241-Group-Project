@@ -1,0 +1,227 @@
+---
+title: "Final Project"
+author: "Hao Chang"
+date: "2022/5/4"
+output:
+  rticles::ctex:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message=F, warning=F}
+library(tidyverse)
+library(leaps)
+library(zoo)
+library(olsrr)
+library(tree)
+library(randomForest)
+library(nnet)
+```
+
+# Data Cleaning
+
+## read the data
+```{r}
+data <- read.csv("data.csv") %>%
+  rename(PercentProtected = co.pre100pct,
+         MedianIncome = mhhi.ia.pre)
+dim(data)
+```
+
+## nas
+```{r}
+# To see nas in response value median income 
+no_vals <- data[is.na(data$MedianIncome),]
+x <- no_vals %>% filter(year == "2015")
+
+interpolated_data <- data %>% filter(town.id != 507) %>%
+  mutate(`MedianIncome` = na.approx(`MedianIncome`))
+
+# choose those log data which we prefer from the whole dataset and rename them
+log_data <- interpolated_data %>% select(year, state.name, gis.join,starts_with("ln."), co.pre100:l5.nn10.co.pre100)
+log_data <- log_data %>% rename(
+  Unemployment_rate = ln.unempr.pre,
+  Median_Income = ln.mhhi.ia.pre,
+  Ag_Employment = ln.agricu.pre ,
+  Arts_Employment = ln.arts.pre,
+  Pop = ln.popcen.pre,
+  All_Protected = co.pre100,
+  Private_Protected = co.priv.pre100,
+  Public_Protected = co.pub.pre100,
+  Distance_100 = ln.ctydist100,
+  Distance_30 = ln.ctydist30
+)
+
+# interpolate the log data median income (probably by cubic spline)
+log_data_trim1 <- log_data %>% mutate(`Median_Income` = na.approx(`Median_Income`))
+log_data_trim <- log_data_trim1 %>% dplyr::filter(year!=1990)
+sapply(log_data_trim, function(x) sum(is.na(x)))
+
+# select the data with no nas as our prefered variables
+log_data_trim_selected <- log_data_trim %>% dplyr::select(-ln.r.units.pre, -Ag_Employment, -Arts_Employment, -Pop)
+log_data_agr <- log_data_trim %>% dplyr::select(-ln.r.units.pre, -Arts_Employment, -Pop)
+dim(log_data_trim_selected)
+
+# separate them into training and test set
+train = sample(1:nrow(log_data_trim_selected), nrow(log_data_trim_selected)/2) #split in half
+data.train=log_data_trim_selected[train,-2]
+data.test=log_data_trim_selected[-train,-2]
+ag.data.train = log_data_agr[train,-2]
+ag.data.test = log_data_agr[-train,-2]
+data.train.state = log_data_trim$state.name[train]
+data.test.state = log_data_trim$state.name[-train]
+```
+
+
+# Data Analysis (regression part)
+
+## linear regression
+```{r}
+simple_regression <- lm(Median_Income ~ All_Protected, data = data.train)
+summary(simple_regression)
+
+multi_regression <- lm(Median_Income ~ . - year -gis.join, data = data.train)
+summary(multi_regression)
+```
+
+Here first we construct a simple linear regerssion model and find that the land protection rate does have a significant influence on the median income of These area. Further more, we do a multiple linear regression for all possible variables and find that there is no signifcant impact for land protection rate right now. It might be the problem of colinearity. To solve this problem, we want to do model selection.
+
+```{r}
+# we use backward selection by aic to find a proper variable set
+k <- ols_step_backward_aic(multi_regression)
+k
+```
+
+Here, we find that the private and public land protection are eliminate from the model, but the all protection rate are still there. Then we use this backward selected model to make a multiple linear regression.
+```{r}
+multi_regression_backward <- lm(Median_Income ~ . - year -gis.join - ln.labf.n.pre - Distance_30 -
+                                  Private_Protected - l5.co.bwf.pre100 - Public_Protected - nn10.co.pre100,
+                                data = data.train)
+summary(multi_regression_backward)
+```
+
+Here, we see that the all protection rate are still not significant, but on the other hand, the lag 5 years land protection are highly significant. From this, I think it's because of the hysteresis effect of the land protection.
+
+## Lasso and Ridge regression
+
+
+
+## regression tree and random Forest
+Here, the reason we want to do this is because we ignore the interaction term of the model when using linear regression model in the previous regression part. And we also want to know more about the importance of each variables.
+
+First we want to get a model from a single tree.
+```{r fig.height=8, fig.width=12}
+tree = tree(Median_Income ~ . - year -gis.join,data=data.train)
+
+# plot the tree
+plot(tree)
+text(tree)
+
+tree.pred = predict(tree,data.test)
+test.mse = mean((tree.pred-data.test$Median_Income)^2)
+test.mse
+```
+
+Then we try random forest, Here it's not a good idea to use all the variables, we can try only the variable selected by the backward stepwise regression as our variable set
+```{r}
+output.forest <- randomForest(Median_Income ~ . - year -gis.join - ln.labf.n.pre - Distance_30 -
+                                  Private_Protected - l5.co.bwf.pre100 - Public_Protected - nn10.co.pre100,
+                                data = data.train)
+
+output.forest <- randomForest(Median_Income ~ Unemployment_rate + ln.emp.n.pre + Distance_100 + l5.co.pre100 +
+                                ln.pop.cen90,
+                                data = data.train)
+
+# View the forest results.
+print(output.forest) 
+plot(output.forest)
+
+# Importance of each predictor.
+varImpPlot(output.forest) 
+print(importance(output.forest,type = 2)) 
+
+
+rm.pred = predict(output.forest,data.test)
+test.mse = mean((rm.pred-data.test$Median_Income)^2)
+test.mse
+```
+
+Here, the regression tree and the random forest both give us a view that Distance 100 is the most important variable contributed to the median income. It's obviously that if there is a big city nearby, then the overall income will be higher. Here, the land protection rate are all in a very similar importance rate, it also somehow related to the overall income.
+
+## PCA and PCR
+
+# Data analysis(Classification part and Clustering part)
+
+## Clustering and it's further application
+
+First we need to decide the clusters when using k-means clustering.  
+```{r}
+# decide the number of cluster
+wss <- (nrow(data.train[,-c(1,2)])-1)*sum(apply(data.train[,-c(1,2)],2,var)) 
+for (i in 2:15) wss[i] <- sum(kmeans(data.train[,-c(1,2)], 
+   centers=i)$withinss) 
+plot(1:15, wss, type="b", xlab="Number of Clusters",
+  ylab="Within groups sum of squares")
+```
+
+By this plot we can see that 3-4 cluster might be a good idea.
+
+```{r}
+# k-means cluster
+fit1 <- kmeans(data.train[,-c(1,2)], 3)
+
+# find the cluster mean
+aggregate(data.train[,-c(1,2)],by=list(fit1$cluster),FUN=mean)
+
+res <- data.frame(data.train, fit1$cluster)
+chisq.test(data.train.state, res$fit1.cluster)
+
+table(data.train.state[res$fit1.cluster==1])
+table(data.train.state[res$fit1.cluster==2])
+table(data.train.state[res$fit1.cluster==3])
+```
+
+Here, the chi square test give us a internal understanding that the cluster is meaningful, which is related to the different state. Then we can try to use this cluster as an response variable to do classification test by using random forest as well as logistic regression.
+
+To be more detailed, we can see that the first cluster include the data mostly from Maine, the second cluster are those from Connecticut, Massachusetts and Rhode island, the third cluster are the data mostly form New Hampshire and Vermont. we can state that these three places have different patterns of land protection and economic performance.
+
+## random forest
+```{r}
+res$fit1.cluster = as.factor(res$fit1.cluster)
+output.forest1 <- randomForest(fit1.cluster ~ . - Median_Income - year -gis.join - ln.labf.n.pre - Distance_30 -
+                                  Private_Protected - l5.co.bwf.pre100 - Public_Protected - nn10.co.pre100,
+                                data = res)
+
+# View the forest results.
+print(output.forest1) 
+plot(output.forest1)
+
+# Importance of each predictor.
+varImpPlot(output.forest1) 
+print(importance(output.forest1,type = 2))
+```
+
+till here, we can get a conclusion that the land protection rate are highly related to the location, which means in different place, the land protection rate are different. But it's not that highly contribute to the economic situation in different places. There is a part of the income that is related to the land protection rate, but the amount is not that high.
+
+To make it further, we want to find if there is a significant relationship between Agriculture employment rate and land protection rate, we do a simple linear regression
+```{r}
+ag_simple_regression <- lm(Ag_Employment ~ All_Protected, data = ag.data.train)
+summary(ag_simple_regression)
+```
+
+However, due to the result, there is no relation either.
+
+## logistic regression (not useful)
+
+To verify the influence of land protection rate to the cluster, we can do a logistic regression
+```{r}
+logistic_m = multinom(fit1.cluster ~ . - Median_Income - year -gis.join - ln.labf.n.pre - Distance_30 -
+                                  Private_Protected - l5.co.bwf.pre100 - Public_Protected - nn10.co.pre100,
+                                data = res)
+summary(logistic_m)
+```
+
+
