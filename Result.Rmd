@@ -19,6 +19,10 @@ library(olsrr)
 library(tree)
 library(randomForest)
 library(nnet)
+library(pls)
+library(ggplot2)
+library(devtools)
+install_github("vqv/ggbiplot")
 ```
 
 # Data Cleaning
@@ -152,6 +156,136 @@ test.mse
 Here, the regression tree and the random forest both give us a view that Distance 100 is the most important variable contributed to the median income. It's obviously that if there is a big city nearby, then the overall income will be higher. Here, the land protection rate are all in a very similar importance rate, it also somehow related to the overall income.
 
 ## PCA and PCR
+```{r}
+res <- cor(log_data_trim_selected[,-c(1,2,3,7)], method="pearson")
+corrplot::corrplot(res, method= "color", order = "hclust")
+```
+
+We use `corrplot` to visualize the relationship between our chosen variables. We can see that there are several obvious clusters appearing.
+
+Cluster 1 (positive correlation) - population,emplyed and labor force
+ln.pop.cen90 - log population in 1990
+ln.emp.n.pre - log average number people employed for five years prior
+ln.labf.n.pre - log average number people in labor force five years prior
+
+Cluster 2 (positive correlation) - land protection(public,private)
+Private_Protected(co.priv.pre100) - log percent of town protected, private
+l5.co.priv.pre100 - 5 year lag of log percent protected, private
+nn10.co.pre100 - log percent protected, 10 nearest neighbors
+l5.nn10.co.pre100 - 5 year lag of log percent protected, 10 nearest neighbors
+nn10.co.pre100 - log percent protected, 10 nearest neighbors
+l5.nn10.co.pre100 - 5 year lag of log percent protected, 10 nearest neighbors
+Public_Protected(co.pub.pre100) - log percent of town protected, public
+l5.co.pub.pre100 - 5 year lag of log percent protected, public
+All_Proctected(co.pre100) - log percent of town protected, public
+l5.co.pre100 - 5 year lag of log percent protected, all types
+
+Cluster 3 (positive correlation) - land protection(timberland)
+co.bwf.pre100 - log percent of town protected, large protected timberland
+l5.co.bwf.pre100 - 5 year lag of log percent protected, large protected timberlands
+
+Cluster 4 (positive correlation) - distance to city
+Distance_100(ln.ctydist100) - log distance in km to city with more than 100K people 1990
+Distance_30(ln.ctydist30) - log distance in km to city with more than 30K people 1990
+
+Cluster 5 (negative correlation) - distance to city & population,emplyed and labor force
+Distance_100(ln.ctydist100) - log distance in km to city with more than 100K people 1990
+Distance_30(ln.ctydist30) - log distance in km to city with more than 30K people 1990
+-
+ln.pop.cen90 - log population in 1990
+ln.emp.n.pre - log average number people employed for five years prior
+ln.labf.n.pre - log average number people in labor force five years prior
+
+```{r}
+pr.out <- prcomp(log_data_trim_selected[,-c(1,2,3,7)],scale. = T,center = T)
+```
+
+```{r}
+plot(pr.out, type = "l")
+```
+
+The plot method returns a plot of the variances (y-axis) associated with the PCs (x-axis). The Figure aboveis useful to decide how many PCs to retain for further analysis. According to the plot we can find that the first three PCs explain most of the variability in the data.
+
+```{r}
+summary(pr.out)
+```
+
+The above summary describe the importance of the PCs. The first row describe the standard deviation associated with each PC. The second row shows the proportion of the variance in the data explained by each component while the third row describe the cumulative proportion of explained variance. We can see there that the first seven PCs accounts for {96%} of the variance of the data.
+
+```{r,fig.width=30,fig.height=12}
+require(ggbiplot)
+
+ggbiplot(pr.out,choices = c(1,2),obs.scale = 1,varname.size = 4,alpha = 0.3,ellipse = T,groups = log_data_trim_selected$state.name)
+```
+
+From the plot, we can get the same result of cluster of correlation plot.
+
+```{r}
+pcr_model <- pcr(Median_Income~.,data = log_data_trim_selected[,-c(1,2,3)],scale=T,validation = "CV")
+```
+
+We apply the principle component regression with `scale = True` that makes the data standardized. And set `validation = "CV"` to do the ten-fold cross-validation.
+
+```{r}
+summary(pcr_model)
+
+validationplot(pcr_model,val.type = "MSEP")
+```
+
+We see that the smallest cross-validation error occurs when M = 15 components are used. This is barely greater than M = 18, which amounts to simply performing least squares, because when all of the components are used in PCR no dimension reduction occurs.
+
+```{r}
+pcr.fit <- pcr(Median_Income ~ ., data = data.train[,-c(1,2)],scale = TRUE, validation = "CV")
+
+pcr.fit$coefficients[,,15]
+```
+From the above table, we can see that there are four variables, "ln.emp.n.pre", "ln.labf.n.pre", "Distance_100" and "ln.pop.cen90", whose absolute value of coefficient value exceeds 0.01. Since all data are scaled, we can consider these four variables to be significant.
+
+To clarify, these five variables are:
+ln.pop.cen90 = log population in 1990;
+ln.emp.n.pre = log average number people employed for five years prior;
+ln.labf.n.pre = log average number people in labor force five years prior;
+Distance_100 = log distance in km to city with more than 100K people 1990.
+
+```{r}
+pcr_predict <- predict(pcr.fit,data.test,ncomp = 15)
+
+(mean((pcr_predict - data.test$Median_Income)^2))
+```
+We can see the MSE of the partial least regression with 10 components is `r (mean((pcr_predict - data.test$Median_Income)^2))`
+
+```{r}
+pls.model <- plsr(Median_Income ~ ., data = log_data_trim_selected[,-c(1,2,3)],scale = TRUE, validation = "CV")
+
+summary(pls.fit)
+
+validationplot(pls.model,val.type = "MSEP")
+```
+
+We see that the smallest cross-validation error occurs when M = 10 components are used. Although the cross-validation error is still decreasing as M becomes larger, the overall difference is almost the same.
+
+```{r}
+pls.fit <- plsr(Median_Income ~ ., data = data.train[,-c(1,2)],scale = TRUE, validation = "CV",ncomp = 10)
+
+pls.fit$coefficients[,,10]
+```
+
+From the above table, we can see that there are four variables, "ln.emp.n.pre", "ln.labf.n.pre", "Distance_100" and "ln.pop.cen90", whose absolute value of coefficient value exceeds 0.01. Since all data are scaled, we can consider these four variables to be significant. The coefficient value of the variable "l5.co.pub.pre100" is very close to 0.1, so we consider this variable also significant.
+
+To clarify, these five variables are:
+ln.pop.cen90 = log population in 1990;
+ln.emp.n.pre = log average number people employed for five years prior;
+ln.labf.n.pre = log average number people in labor force five years prior;
+Distance_100 = log distance in km to city with more than 100K people 1990;
+l5.co.pub.pre100 = 5 year lag of log percent protected, public.
+
+```{r}
+pls.pred <- predict(pls.fit,data.test, ncomp = 10)
+
+(mean((pls.pred - data.test$Median_Income)^2))
+```
+
+We can see the MSE of the partial least regression with 10 components is `r (mean((pls.pred - data.test$Median_Income)^2))`, which is greater than the MSE of the principle regression with 15 components.
 
 # Data analysis(Classification part and Clustering part)
 
